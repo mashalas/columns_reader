@@ -4,11 +4,43 @@ from collections import Counter
 from statistics import mean
 from pprint import pprint
 import datetime
+import math
 
 ON_UNDEFINED__KEEP = 'keep'
 ON_UNDEFINED__SKIP_ROW = 'skip_row'
 ON_UNDEFINED__BREAK = 'break'
 ON_UNDEFINED__EXCEPTION = 'exception'
+
+ON_ERROR__SET_NONE = 'set_none'
+ON_ERROR__DELETE_ROW = 'delete_row'
+ON_ERROR__EXCEPTION = 'exception'
+ON_ERROR__DISCARD_CHANGES = 'discard_changes'
+
+TRANSFORMATION_KIND__LOWER = 'lower'
+TRANSFORMATION_KIND__UPPER = 'lower'
+TRANSFORMATION_KIND__CAPITALIZE = 'capitalize'
+TRANSFORMATION_KIND__STRIP = 'strip'
+TRANSFORMATION_KIND__LSTRIP = 'lstrip'
+TRANSFORMATION_KIND__RSTRIP = 'rstrip'
+TRANSFORMATION_KIND__SET_LENGTH = 'set_length'
+TRANSFORMATION_KIND__REPLACE = 'replace'
+TRANSFORMATION_KIND__LOWER_LIMIT = 'lower_limit'
+TRANSFORMATION_KIND__UPPER_LIMIT = 'upper_limit'
+TRANSFORMATION_KIND__MULTIPLY = 'multiply'
+TRANSFORMATION_KIND__DIVIDE = 'divide'
+TRANSFORMATION_KIND__ADD = 'add'
+TRANSFORMATION_KIND__SUBSTRACT = 'substract'
+TRANSFORMATION_KIND__NORMALIZE = 'normalize'
+TRANSFORMATION_KIND__STANDARDIZE = 'standardize'
+TRANSFORMATION_KIND__ABS = 'abs'
+TRANSFORMATION_KIND__SQRT = 'sqrt'
+TRANSFORMATION_KIND__POWER = 'power'
+
+TRANSFORMATION_KIND__TO_FLOAT = 'to_float'
+TRANSFORMATION_KIND__TO_INTEGER = 'to_float'
+TRANSFORMATION_KIND__TO_STRING = 'to_float'
+TRANSFORMATION_KIND__TO_BOOLEAN = 'to_boolean'
+TRANSFORMATION_KIND__TO_DATE_TIME = 'to_date_time'
 
 DIRECTION__VER = 'v'
 DIRECTION__HOR = 'h'
@@ -23,14 +55,6 @@ TRUE_VALUES  = ['1', '+', 'yes', 'on']
 FALSE_VALUES = ['0', '-', 'no',  'off']
 
 DEFAULT_DATETIME_FORMAT = '%Y-%m-%d %H:%M:%S.%f'
-# datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]  =>  2022-09-24 10:18:32.926  (trim the last three digits of %f (microseconds))
-
-
-#s1 = "abcdefg"; s2 = s1[:-3]; print(s2); exit(0)
-#d1 = datetime.datetime.now(); s1 = d1.strftime(DEFAULT_DATETIME_FORMAT); print(s1); exit(0)
-#print(str(True)); print(str(False)); exit(0)
-#d1 = datetime.datetime.strptime("2025-11-20 11:46", "%Y-%m-%d %H:%M"); print(d1); print(type(d1)); exit(0)
-#d1 = datetime.datetime.now(); s1 = d1.strftime("%Y-%m-%d %H:%M:%S"); print(d1, s1); exit(0)
 
 
 def dump_vector(
@@ -95,35 +119,24 @@ def dump_matrix(
             f.write('\n')
 
 
-def str2datetime():
-    pass
+# ----- Нормализация к диапазону -----
+def normalize(x, x_min, x_max, target_min, target_max):
+    return target_min + (x - x_min) / (x_max - x_min) * (target_max - target_min)
 
 
-
-class SimpleColumnsReader():
+class ColumnsReader():
 
     def __init__(self) -> None:
-        self.header = []
-        self.data = []
-        self.skipped_count = 0
-        self.data_type = DATA_TYPE__STRING
+        self.last_file_header = [] # названия всех столбцов из последнего прочитанного файла
+        self.header = [] # названия столбцов, которые читались из файла
+        self.data = [] # данные столбцов, которые читались из файла
+        self.skipped_count = 0 # сколько строк файла не удалось прочитать
+        self.last_error = None
 
-    def get_data_type(self):
-        return self.data_type
 
     def get_skipped_count(self):
         return self.skipped_count
-
-    """
-    def get_header(self, columns = []):
-        if len(columns) == 0:
-            return self.header.copy()
-        header = []
-        columns_indexes = self.get_columns_indexes(columns, self.header)
-        for ci in columns_indexes:
-            header.append(self.header[ci])
-        return header
-    """
+    
 
     def get_column_index(self, column, header):
         column_index = None
@@ -146,6 +159,7 @@ class SimpleColumnsReader():
                         column_index = j
                         break
         return column_index
+
 
     def get_columns_indexes(self, columns, header):
         if type(columns) != type([]) and type(columns) != type(()):
@@ -173,7 +187,7 @@ class SimpleColumnsReader():
             csv__encoding:str = 'utf-8',
             rows_max_count__total:int = 0,
             rows_max_count__file:int = 0,
-            only_header:bool = False,
+            read_header_only:bool = False,  # прочитать и вернуть только заголовок файла
             undefined_values = [''], # эти значения заменяются на None, если on_undefined_action == ON_UNDEFINED__KEEP
             on_undefined_action = ON_UNDEFINED__KEEP
     ):
@@ -189,6 +203,7 @@ class SimpleColumnsReader():
                 escapechar=csv__escapechar
             ) # есть ещё параметры в csv.reader
             self.header.clear()
+            self.last_file_header.clear()
             if clear_data:
                 self.data.clear()
                 self.skipped_count = 0
@@ -197,12 +212,19 @@ class SimpleColumnsReader():
             for row in reader:
                 #print(row)
                 file_row_number += 1
-                if len(self.header) == 0:
-                    columns_indexes = self.get_columns_indexes(columns, row)
+                if len(row) == 0:
+                    # пустая строка
+                    continue
+                if len(self.last_file_header) == 0:
+                    self.last_file_header = row.copy()
+                    if read_header_only:
+                        return self.last_file_header
+                    columns_indexes = self.get_columns_indexes(columns, self.last_file_header)
                     for ci in range(len(columns_indexes)):
-                        self.header.append( row[ci] )
-                    if only_header:
-                        return
+                        self.header.append( self.last_file_header[ci] )
+                    continue
+                if len(row) < len(self.last_file_header):
+                    # количество столбцов в строке данных меньше количества столбцов в заголовке
                     continue
                 data_row = []
                 for ci in columns_indexes:
@@ -213,7 +235,8 @@ class SimpleColumnsReader():
                             msg = 'At line #{} column "{}" contains undefined value "{}"' . format(file_row_number, self.header[ci], x)
                             raise Exception(msg)
                         elif on_undefined_action == ON_UNDEFINED__BREAK:
-                            return
+                            self.last_error = 'At line #{} column "{}" contains undefined value "{}"' . format(file_row_number, self.header[ci], x)
+                            return False
                         elif on_undefined_action == ON_UNDEFINED__SKIP_ROW:
                             data_row.clear()
                             self.skipped_count += 1
@@ -230,15 +253,19 @@ class SimpleColumnsReader():
                     break
                 if rows_max_count__file > 0 and appended_rows_count >= rows_max_count__file:
                     break
-        
+        return True
+
+
     def remove_column(self, column):
         ci = self.get_column_index(column, self.header)
         for i in range(len(self.data)):
             del self.data[i][ci]
         del self.header[ci]
 
+
     def remove_row(self, row_number):
         del self.data[row_number]
+
 
     def get_rows_count(self):
         return len(self.data)
@@ -260,122 +287,205 @@ class SimpleColumnsReader():
             self.data = tmp_data.deepcopy()
     """
 
-    def get_column(self, column):
+
+    # ----- Получить в виде вектора значения указанного по имени или номеру столбца ----
+    # ----- когда keep_undefined - добавлять в список значение None, если false - не добавлять их -----
+    def get_column(self, column, keep_undefined = True):
         column_index = self.get_column_index(column, self.header)
         items = []
         for i in range(len(self.data)):
-            items.append(self.data[i][column_index])
+            if keep_undefined or self.data[i][column_index] is not None:
+                items.append(self.data[i][column_index])
         return items
     
 
-    def _convert_value(self, x, dest_data_type, true_values = TRUE_VALUES, false_values = FALSE_VALUES, datetime_format = ''):
-        result = None
-        if dest_data_type == DATA_TYPE__STRING:
-            if isinstance(x, datetime.datetime):
-                if datetime_format == '':
-                    datetime_format = DEFAULT_DATETIME_FORMAT
-                result = x.strftime(datetime_format) # если есть параметр %f - будут микросекунды (6 символов после запятной)
-                #if datetime_format.find('.%f') >= 0:
-                #    # используются миллисекунды
-                #    result = result[:-3]
-            else:               
-                result = str(x)
-        elif dest_data_type == DATA_TYPE__INTEGER:
-            result = int(x)
-        elif dest_data_type == DATA_TYPE__FLOAT:
-            result = float(x)
-        elif dest_data_type == DATA_TYPE__BOOLEAN:
-            if x in true_values:
-                result = True
-            elif x in false_values:
-                result = False
-        elif dest_data_type == DATA_TYPE__DATETIME:
-            result = str2datetime(x)
-        return result
-
-
-    def _convert(
+    def _transform_column(
             self,
-            dest_data_type,
-            columns,
+            transformation_kind,
+            column_index,
+            on_error,
             instead_of_undefined,
-            true_values = TRUE_VALUES,
-            false_values = FALSE_VALUES,
-            datetime_format = ''
+            transformation_param1,
+            transformation_param2,
+            transformation_param3,
+            transformation_param4
+    ):
+        self.last_error = None
+        j = column_index
+        ci = column_index
+        backup = []
+        for i in range(len(self.data)):
+            x = self.data[i][j]
+            backup.append(x)
+            if x is None:
+                # если текущее значение не определено и указано на что замениять неопределённые значения
+                if instead_of_undefined is not None:
+                    x = instead_of_undefined
+            elif transformation_kind == TRANSFORMATION_KIND__UPPER:
+                # в верхний регистр
+                x = x.upper()
+            elif transformation_kind == TRANSFORMATION_KIND__LOWER:
+                # в нижний регистр
+                x = x.lower()
+            elif transformation_kind == TRANSFORMATION_KIND__CAPITALIZE:
+                # первая буква - заглавная
+                x = x.capitalize()
+            elif transformation_kind == TRANSFORMATION_KIND__STRIP:
+                # удалить пробелы в начале и конце
+                x = x.strip()
+            elif transformation_kind == TRANSFORMATION_KIND__LSTRIP:
+                # удалить пробелы в начале
+                x = x.strip()
+            elif transformation_kind == TRANSFORMATION_KIND__RSTRIP:
+                # удалить пробелы в конце
+                x = x.strip()
+            elif transformation_kind == TRANSFORMATION_KIND__SET_LENGTH:
+                # если строка длиннее transformation_param1 - укоротить до transformation_param1
+                # если строка короче transformation_param1 - дополнить до transformation_param1
+                # при дополнении до заданной длины transformation_param2 добавляется в начале , transformation_param3 добавляется в конце
+                x = x[0:transformation_param1]
+                while x < transformation_param1:
+                    if transformation_param2 is not None and transformation_param2 != '':
+                        x = transformation_param2 + x
+                    elif transformation_param3 is not None and transformation_param3 != '':
+                        x += transformation_param3
+                    else:
+                        break
+            elif transformation_kind == TRANSFORMATION_KIND__REPLACE:
+                # замена подстроки
+                if transformation_param3 is None:
+                    # выполнить замену для всех совпадений
+                    x = x.replace(transformation_param1, transformation_param2)
+                else:
+                    # указано максимальное количество замен
+                    x = x.replace(transformation_param1, transformation_param2, transformation_param3)
+            elif transformation_kind == TRANSFORMATION_KIND__LOWER_LIMIT:
+                # если числовое значение меньше указанного предела в transformation_param1 - заменить на transformation_param1
+                if x < transformation_param1:
+                    x = transformation_param1
+            elif transformation_kind == TRANSFORMATION_KIND__UPPER_LIMIT:
+                # если числовое значение больше указанного предела в transformation_param1 - заменить на transformation_param1
+                if x > transformation_param1:
+                    x = transformation_param1
+            elif transformation_kind == TRANSFORMATION_KIND__MULTIPLY:
+                # умножить на transformation_param1
+                x = x * transformation_param1
+            elif transformation_kind == TRANSFORMATION_KIND__DIVIDE:
+                # разделить на transformation_param1
+                x = x / transformation_param1
+            elif transformation_kind == TRANSFORMATION_KIND__ADD:
+                # сложить с transformation_param1
+                x = x + transformation_param1
+            elif transformation_kind == TRANSFORMATION_KIND__SUBSTRACT:
+                # вычесть transformation_param1
+                x = x - transformation_param1
+            elif transformation_kind == TRANSFORMATION_KIND__NORMALIZE:
+                # нормализация к диапазону
+                x = normalize(x, transformation_param1, transformation_param2, transformation_param3, transformation_param4)
+            elif transformation_kind == TRANSFORMATION_KIND__STANDARDIZE:
+                # нормализация стандартным отклонением (xi - x_avg) / stddev
+                x = (x - transformation_param1) / transformation_param2
+            elif transformation_kind == TRANSFORMATION_KIND__ABS:
+                # модуль числа
+                if x < 0:
+                    x = -x
+            elif transformation_kind == TRANSFORMATION_KIND__SQRT:
+                # квадратный корень
+                x = math.sqrt(x)
+            elif transformation_kind == TRANSFORMATION_KIND__POWER:
+                # возведение в степень
+                x = x ** transformation_param1                
+            elif transformation_kind == TRANSFORMATION_KIND__TO_FLOAT:
+                try:
+                    x_flt = float(x)
+                    x = x_flt
+                except:
+                    if on_error == ON_ERROR__SET_NONE:
+                        x = None
+                    elif on_error == ON_ERROR__EXCEPTION:
+                        raise Exception('Cannot convert "{}" to float on line #{}' . format(x, i))
+                    elif on_error == ON_ERROR__SET_NONE:
+                        x = None
+                    elif on_error == ON_ERROR__DISCARD_CHANGES:
+                        for i in range(len(backup)):
+                            self.data[i][ci] = backup[i]
+                        self.last_error = 'Cannot convert "{}" to float on line #{}' . format(x, i)
+                        return False
+            elif transformation_kind == TRANSFORMATION_KIND__TO_INTEGER:
+                try:
+                    x_int = int(x)
+                    x = x_int
+                except:
+                    if on_error == ON_ERROR__SET_NONE:
+                        x = None
+                    elif on_error == ON_ERROR__EXCEPTION:
+                        raise Exception('Cannot convert "{}" to integer on line #{}' . format(x, i))
+                    elif on_error == ON_ERROR__SET_NONE:
+                        x = None
+                    elif on_error == ON_ERROR__DISCARD_CHANGES:
+                        for i in range(len(backup)):
+                            self.data[i][ci] = backup[i]
+                        self.last_error = 'Cannot convert "{}" to integer on line #{}' . format(x, i)
+                        return False
+            elif transformation_kind == TRANSFORMATION_KIND__TO_STRING:
+                x = str(x)
+            elif transformation_kind == TRANSFORMATION_KIND__TO_BOOLEAN:
+                x = x.lower()
+                if x in TRUE_VALUES:
+                    x = True
+                elif x in FALSE_VALUES:
+                    x = False
+                else:
+                    x = None
+            elif transformation_kind == TRANSFORMATION_KIND__TO_DATE_TIME:
+                try:
+                    x_dt = datetime.datetime.strptime(x, transformation_param1)
+                    x = x_dt
+                except:
+                    if on_error == ON_ERROR__SET_NONE:
+                        x = None
+                    elif on_error == ON_ERROR__EXCEPTION:
+                        raise Exception('Cannot convert "{}" to date/time on line #{}' . format(x, i))
+                    elif on_error == ON_ERROR__SET_NONE:
+                        x = None
+                    elif on_error == ON_ERROR__DISCARD_CHANGES:
+                        for i in range(len(backup)):
+                            self.data[i][ci] = backup[i]
+                        self.last_error = 'Cannot convert "{}" to date/time on line #{}' . format(x, i)
+                        return False
+            if x is None:
+                if instead_of_undefined is not None:
+                    x = instead_of_undefined
+            self.data[i][ci] = x
+        return True
+
+    def transform(
+            self,
+            transformation_kind,
+            columns = [],
+            transformation_param1 = None,
+            transformation_param2 = None,
+            transformation_param3 = None,
+            transformation_param4 = None,
+            on_error = ON_ERROR__EXCEPTION,
+            instead_of_undefined = None,
         ):
         columns_indexes = self.get_columns_indexes(columns, self.header)
         for ci in columns_indexes:
-            undefined_count = 0
-            for i in range(len(self.data)):
-                x = self.data[i][ci]
-                if x is None:
-                    undefined_count += 1
-                    if not instead_of_undefined is None:
-                        # явно указано на что заменить None
-                        self.data[i][ci] = instead_of_undefined
-                else:
-                    self.data[i][ci] = self._convert_value(
-                        x,
-                        dest_data_type,
-                        true_values=true_values,
-                        false_values=false_values
-                    )
-            if undefined_count > 0 and instead_of_undefined is None:
-                # есть неопределённые значения и не указано на что их заменить - заменить на медианное значение
-                items = []
-                for i in range(len(self.data)):
-                    if not self.data[i][ci] is None:
-                        items.append(self.data[i][ci])
-                items.sort()
-                p = int(len(items) / 2)
-                median_value = items[p]
-                for i in range(len(self.data)):
-                    if self.data[i][ci] is None:
-                        self.data[i][ci] = median_value
+            ok = self._transform_column(
+                transformation_kind,
+                ci,
+                on_error,
+                instead_of_undefined,
+                transformation_param1,
+                transformation_param2,
+                transformation_param3,
+                transformation_param4
+            )
+            if not ok:
+                return False
+        return True
 
-            
-    def to_float(self, columns = [], instead_of_undefined = None):
-        self._convert(DATA_TYPE__FLOAT, columns, instead_of_undefined)
-
-    def to_integer(self, columns = [], instead_of_undefined = None):
-        self._convert(DATA_TYPE__INTEGER, columns, instead_of_undefined)
-
-    def to_boolean(self, columns = [], instead_of_undefined = None, true_values = TRUE_VALUES, false_values = FALSE_VALUES):
-        self._convert(DATA_TYPE__INTEGER, columns, instead_of_undefined, true_values=true_values, false_values=false_values)
-
-    def to_string(self, columns = [], instead_of_undefined = None):
-        self._convert(DATA_TYPE__STRING, columns, instead_of_undefined)
-
-    def to_datetime(self, columns = [], instead_of_undefined = None, datetime_format = ''):
-        self._convert(DATA_TYPE__DATETIME, columns, instead_of_undefined, datetime_format=datetime_format)
-
-    """
-    def to_float1(self, columns = [], instead_of_undefined = None):
-        columns_indexes = self.get_columns_indexes(columns, self.header)
-        for ci in columns_indexes:
-            undefined_count = 0
-            for i in range(len(self.data)):
-                x = self.data[i][ci]
-                if x is None:
-                    undefined_count += 1
-                    if not instead_of_undefined is None:
-                        # явно указано на что заменить None
-                        self.data[i][ci] = instead_of_undefined
-                else:
-                    self.data[i][ci] = float(x)
-            if undefined_count > 0 and instead_of_undefined is None:
-                # есть неопределённые значения и не указано на что их заменить - заменить на медианное значение
-                items = []
-                for i in range(len(self.data)):
-                    if type(self.data[i][ci]) == type(123.456):
-                        items.append(self.data[i][ci])
-                items.sort()
-                p = int(len(items) / 2)
-                median_value = items[p]
-                for i in range(len(self.data)):
-                    if not type(self.data[i][ci]) == type(123.456):
-                        self.data[i][ci] = median_value
-    """
 
     def undefined_to_something(self, something, columns = []):
         columns_indexes = self.get_columns_indexes(columns, self.header)
@@ -383,6 +493,7 @@ class SimpleColumnsReader():
             for i in range(len(self.data)):
                 if self.data[i][ci] is None:
                     self.data[i][ci] = something
+
 
     def undefined_to_median(self, columns = []):
         columns_indexes = self.get_columns_indexes(columns, self.header)
@@ -403,12 +514,6 @@ class SimpleColumnsReader():
                     if self.data[i][ci] is None:
                         self.data[i][ci] = items[p]
 
-    def str_replace(self, seek, replace_to, columns = []):
-        columns_indexes = self.get_columns_indexes(columns, self.header)
-        for ci in columns_indexes:
-            for i in range(len(self.data)):
-                if type(self.data[i][ci]) == type("abc"):
-                    self.data[i][ci] = self.data[i][ci].replace(seek, replace_to)
 
     def one_hot_encoding(self, column, classes = {}, when_matched = 1.0, when_missed = 0.0, keep_src_column:bool = False):
         # classes: [
@@ -489,7 +594,7 @@ class SimpleColumnsReader():
         return self.data
 
     def copy(self, columns = [], since_row = 0, until_row = -1):
-        csr = SimpleColumnsReader()
+        csr = ColumnsReader()
         columns_indexes = self.get_columns_indexes(columns, self.header)
         if until_row < 0:
             until_row = len(self.data)
@@ -545,6 +650,71 @@ class SimpleColumnsReader():
                 print('\t' + str(self.data[i][ci]), end='')
             print('')
 
+    # ----- Получить список уникальных значений столбца -----
+    def get_unique_values(self, column, ignore_case:bool = False):
+        j = self.get_column_index(column, self.header)
+        values_set = set()
+        for i in range(len(self.data)):
+            x = self.data[i][j]
+            if ignore_case:
+                x = x.lower()
+            if x not in values_set:
+                values_set.add(x)
+        values_list = list(values_set)
+        values_list.sort()
+        return values_list
+    
+    # ----- Получить словарь, в котором ключ - уникальное значение столбца, а значение - сколько раз это значание повторяется в таблице -----
+    def count_unique_values(self, column, ignore_case:bool = False):
+        j = self.get_column_index(column, self.header)
+        values = {}
+        for i in range(len(self.data)):
+            x = self.data[i][j]
+            if ignore_case:
+                x = x.lower()
+            if x in values:
+                values[x] += 1
+            else:
+                values[x] = 1
+        return values
+    
+    # ----- Получить минимальное значение столбца -----
+    def get_min(self, column):
+        items = self.get_column(column, False)
+        return min(items)
+
+
+    # ----- Получить максимальное значение столбца -----
+    def get_max(self, column):
+        items = self.get_column(column, False)
+        return max(items)
+
+    # ----- Получить среднее значение столбца (Столбец должен быть числовой) -----
+    def get_mean(self, column):
+        items = self.get_column(column, False)
+        return mean(items)
+
+
+    # ----- Получить медианное значение столбца -----
+    def get_median(self, column):
+        items = self.get_column(column, False)
+        items.sort()
+        p = int(len(items) / 2)
+        return items[p]
+
+    # ----- Получить значение заданного процентиля для столбца -----
+    def get_procentile(self, column, procentile):
+        items = self.get_column(column, False)
+        items.sort()
+        if procentile <= 0:
+            return items[0]
+        elif procentile >= 1:
+            return items[-1]
+        p = round(procentile * len(items))
+        return items[p]
+
+
+
     def head(self, columns = [], first_rows_count = 5):
         self.print(columns, 0, first_rows_count)
 
@@ -554,15 +724,15 @@ class SimpleColumnsReader():
 
 
 def sample1():
-    scr1 = SimpleColumnsReader()
-    scr1.read(
+    cr1 = ColumnsReader()
+    cr1.read(
         #'20230726-H/train.csv',
         'sample1.txt',
         csv__delimiter='\t',
         on_undefined_action=ON_UNDEFINED__KEEP,
         rows_max_count__file=25
     )
-    print(scr1.header); pprint(scr1.data)
+    print(cr1.header); pprint(cr1.data)
 
     # изменение в data1 приводит к изменению в исходном объекте
     #data1 = scr1.get_data(); data1[0][0] = 'replaced value'; print(scr1.header); pprint(scr1.data); exit(0)
@@ -571,17 +741,17 @@ def sample1():
     #data1 = scr1.copy_data(); data1[0][0] = 'replaced value'; print(scr1.header); pprint(scr1.data); pprint(data1); exit(0)
 
     #a1 = scr1.get_data(['height', 'weight']); pprint(a1); exit(0)
-    scr2 = scr1.copy(['height', 'weight'], 2, 4)
-    scr2.str_replace(',', '.')
-    scr2.to_float()
-    pprint(scr2.get_data())
+    cr2 = cr1.copy(['height', 'weight'], 2, 4)
+    cr2.str_replace(',', '.')
+    cr2.to_float()
+    pprint(cr2.get_data())
     exit(0)
-    scr1.one_hot_encoding('material')
-    print(scr1.header); pprint(scr1.data)
+    cr1.one_hot_encoding('material')
+    print(cr1.header); pprint(scr1.data)
 
-    scr1.str_replace(',', '.')
-    scr1.to_float()
-    print(scr1.header); pprint(scr1.data)
+    cr1.str_replace(',', '.')
+    cr1.to_float()
+    print(cr1.header); pprint(cr1.data)
 
 
 if __name__ == "__main__":
