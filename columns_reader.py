@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 
 import csv
 from collections import Counter
@@ -37,14 +38,15 @@ TRANSFORMATION_KIND__SQRT = 'sqrt'
 TRANSFORMATION_KIND__POWER = 'power'
 
 TRANSFORMATION_KIND__TO_FLOAT = 'to_float'
-TRANSFORMATION_KIND__TO_INTEGER = 'to_float'
-TRANSFORMATION_KIND__TO_STRING = 'to_float'
+TRANSFORMATION_KIND__TO_INTEGER = 'to_integer'
+TRANSFORMATION_KIND__TO_STRING = 'to_string'
 TRANSFORMATION_KIND__TO_BOOLEAN = 'to_boolean'
 TRANSFORMATION_KIND__TO_DATE_TIME = 'to_date_time'
 
 DIRECTION__VER = 'v'
 DIRECTION__HOR = 'h'
 
+DATA_TYPE__UNKNOWN = 'unknown'
 DATA_TYPE__STRING = 'string'
 DATA_TYPE__INTEGER = 'integer'
 DATA_TYPE__FLOAT = 'float'
@@ -124,6 +126,137 @@ def normalize(x, x_min, x_max, target_min, target_max):
     return target_min + (x - x_min) / (x_max - x_min) * (target_max - target_min)
 
 
+# ----- Является ли параметр массивом (список, кортёж) -----
+def is_array(x) -> bool:
+    if type(x) == type([]):
+        return True
+    if type(x) == type(()):
+        return True
+    return False
+
+# ----- Является ли параметр скаляром (не список, не кортёж) -----
+def is_scalar(x) -> bool:
+    if type(x) == type([]):
+        return False
+    if type(x) == type(()):
+        return False
+    return True
+
+
+# ------- Попытаться преобразовать строку в дату/время; вернуть дату или None, если конвертирование не удалось -------
+def str_to_date_time(s):
+    #                     123456
+    # dd.mm.yyyy hh:mm:ss.micros
+    # yyyy-mm-dd hh:mm:ss.micros
+    # 01234567890123456789012345
+    if len(s) < 10:
+        # слишком мало символов, чтобы быть датой
+        return None
+    year = None
+    month = None
+    day = None
+    if (
+        s[0].isdigit() and
+        s[1].isdigit() and
+        not(s[2].isdigit()) and
+        s[3].isdigit() and
+        s[4].isdigit() and
+        not(s[5].isdigit()) and
+        s[6].isdigit() and
+        s[7].isdigit() and
+        s[8].isdigit() and
+        s[9].isdigit() and
+        1 == 1
+    ) :
+        # dd.mm.yyyy hh:mm:ss
+        # 0123456789012345678
+        try:
+            day = int(s[0:2])
+            month = int(s[3:5])
+            year = int(s[6:10])
+        except:
+            return None
+    elif (
+        s[0].isdigit() and
+        s[1].isdigit() and
+        s[2].isdigit() and
+        s[3].isdigit() and
+        not(s[4].isdigit()) and
+        s[5].isdigit() and
+        s[6].isdigit() and
+        not(s[7].isdigit()) and
+        s[8].isdigit() and
+        s[9].isdigit() and
+        1 == 1
+    ) :
+        # yyyy-mm-dd hh:mm:ss
+        # 0123456789012345678
+        try:
+            year = int(s[0:4])
+            month = int(s[5:7])
+            day = int(s[8:10])
+        except:
+            return None
+    else:
+        return None
+    hour = 0
+    minute = 0
+    second = 0
+    micros = 0
+    # dd.mm.yyyy hh:mm:ss
+    # 0123456789012345678
+    if len(s) >= 13:
+        try:
+            hour = int(s[11:13])
+        except:
+            return None
+    if len(s) >= 16:
+        try:
+            minute = int(s[14:16])
+        except:
+            return None
+    if len(s) >= 19:
+        try:
+            second = int(s[17:19])
+        except:
+            return None
+        
+    if len(s) >= 21 and not s[19].isdigit() :
+        # микросекунды
+        i = 20
+        micros_str = ""
+        while i < len(s) and i < 26:
+            if s[i].isdigit():
+                micros_str += s[i]
+                i += 1
+
+        n1 = len(micros_str)
+        #print("micros_str:", micros_str, "  n1:", n1)
+        # удалить ведущие нули
+        leading_zeros_count = 0
+        while len(micros_str) > 0 and micros_str[0] == "0":
+            leading_zeros_count += 1
+            micros_str = micros_str[1:len(micros_str)]
+                
+        try:
+            micros = int(micros_str)
+            #micros = float("0." + micros_str)
+            n2 = 6 - n1
+            for i in range(n2):
+                micros *= 10
+            #print("micros:", micros)
+        except:
+            return None
+
+    #print(year, month, day, hour, minute, second)
+    try:
+        result = datetime.datetime(year, month, day, hour, minute, second, micros)
+    except:
+        return None
+    return result
+
+#print(str_to_date_time('2026-09_27T12:15:59.123')); exit(0)
+
 class ColumnsReader():
 
     def __init__(self) -> None:
@@ -152,17 +285,20 @@ class ColumnsReader():
                 if column == header[j]:
                     column_index = j
                     break
-                # искать по имени столбца без учёта регистра
-                column__lower = column.lower()
+            if column_index is None:
+                # искать по имени столбца без учёта регистра (т.к. с учётом регистра не нашли)
                 for j in range(len(header)):
-                    if column__lower == header[j].lower():
-                        column_index = j
-                        break
+                    column__lower = column.lower()
+                    for j in range(len(header)):
+                        if column__lower == header[j].lower():
+                            column_index = j
+                            break
         return column_index
 
 
     def get_columns_indexes(self, columns, header):
-        if type(columns) != type([]) and type(columns) != type(()):
+        #if type(columns) != type([]) and type(columns) != type(()):
+        if is_scalar(columns):
             columns = [columns] # если передан скаляр - преобразовать его в массив
         if len(columns) == 0:
             # если столбцы не укзаны - подразумеваются все столбцы
@@ -256,36 +392,84 @@ class ColumnsReader():
         return True
 
 
-    def remove_column(self, column):
+    # ----- Удалить столбец (можно указать несколько столбцов) -----
+    def drop_column(self, column):
+        if is_array(column):
+            for c in column:
+                self.drop_column(c)
+            return
         ci = self.get_column_index(column, self.header)
         for i in range(len(self.data)):
             del self.data[i][ci]
         del self.header[ci]
 
 
-    def remove_row(self, row_number):
+    # ----- Добавить новый столбец данных, значения переданы в items[], их количество должно совпадать с количеством уже имеющихся строк с данными -----
+    def add_column(self, name, items):
+        if name in self.header:
+            msg = 'Column "{}" already exists!' . format(name)
+            raise Exception(msg)
+        items_count = len(items)
+        data_rows_count = len(self.data)
+        if items_count != data_rows_count:
+            msg = 'Data contains {} rows but new column "{}" contains {} rows' . format(data_rows_count, name, items_count)
+            raise Exception(msg)
+        self.header.append(name)
+        #j = len(self.header) - 1
+        for i in range(len(self.data)):
+            self.data[i].append(items[i])
+
+
+    # ----- Удалить строку с указанным номером (отсчёт начинается с 0) -----
+    # (нельзя указать несколько номеров строк, т.к. после удаления одной строки, для других изменится нумерация)
+    def delete_one_row(self, row_number):
         del self.data[row_number]
 
 
+    # ----- Удалить несколько строк с указанными номерами (отсчёт начинается с 0) -----
+    def delete_several_rows(self, rows_numbers):
+        tmp = []
+        for i in range(len(self.data)):
+            if i not in rows_numbers:
+                tmp.append(self.data[i])
+        self.data = tmp
+
+
+    # ----- Обновить значение в таблице данных для указанного столбца и номера строки (можно указать несколько номеров строк) -----
+    def update(self, column, row_number, new_data):
+        if is_array(row_number):
+            for rn in row_number:
+                self.update(column, rn, new_data)
+            return
+        column_index = self.get_column_index(column, self.header)
+        self.data[row_number][column_index] = new_data
+
+
+    # ----- Количество строк с данными -----
     def get_rows_count(self):
         return len(self.data)
         
-    """
-    def remove_rows_with_empty(self):
+
+    def delete_rows_with_empty(self, empty_values = []):
         removing_rows = []
+        columns_count = len(self.data[0])
         for i in range(len(self.data)):
-            for j in range(len(self.data[i])):
-                if self.data[i][j] == '':
+            for j in range(columns_count):
+                if self.data[i][j] is None:
                     removing_rows.append(i)
                     break
+                if empty_values is None or len(empty_values) == 0:
+                    # не указан список "пустых" значений - проверять с пустой строкой
+                    if self.data[i][j] == '':
+                        removing_rows.append(i)
+                        break
+                else:
+                    # указан список "пустых" значений - сверять на пустоту только с ним
+                    if self.data[i][j] in empty_values:
+                        removing_rows.append(i)
+                        break
         if len(removing_rows) > 0:
-            tmp_data = []
-            for i in range(len(self.data)):
-                if i not in removing_rows:
-                    tmp_data.append(self.data[i])
-            self.data.clear()
-            self.data = tmp_data.deepcopy()
-    """
+            self.delete_several_rows(removing_rows)
 
 
     # ----- Получить в виде вектора значения указанного по имени или номеру столбца ----
@@ -439,8 +623,17 @@ class ColumnsReader():
                     x = None
             elif transformation_kind == TRANSFORMATION_KIND__TO_DATE_TIME:
                 try:
-                    x_dt = datetime.datetime.strptime(x, transformation_param1)
-                    x = x_dt
+                    if transformation_param1 is None:
+                        # формат даты не задан, попытаться сконвертировать автоматически
+                        x_dt = str_to_date_time(x)
+                        if x_dt is not None:
+                            x = x_dt
+                        else:
+                            raise Exception('Cannot convert "{}" to date/time' . format(x))
+                    else:
+                        # явно заданный формат даты
+                        x_dt = datetime.datetime.strptime(x, transformation_param1)
+                        x = x_dt
                 except:
                     if on_error == ON_ERROR__SET_NONE:
                         x = None
@@ -515,34 +708,35 @@ class ColumnsReader():
                         self.data[i][ci] = items[p]
 
 
-    def one_hot_encoding(self, column, classes = {}, when_matched = 1.0, when_missed = 0.0, keep_src_column:bool = False):
-        # classes: [
-        #    ['animals',   'leopard', 'tiger', 'wolf', 'elephant'],
-        #    ['plants'     'rye', 'wheat', 'apples', 'apple', 'corn']
-        # ]
+    def one_hot_encoding(
+            self,
+            column, # имя или номер столбца на основе которого сформировать OneHotEncoding-столбцы
+            classes = {},   # словарь, в котором ключ - имя нового ohe-столбца, а значение - список значений таблицы данных
+                            # соответствующих этому столбцу
+                            # если не задан - автоматически определить ohe-столбцы
+            when_matched = 1.0,
+            when_missed = 0.0,
+            keep_src_column:bool = False    # сохранять ли исходный столбец, на основе которого были получены новые ohe-столбцы
+        ):
 
         ci = self.get_column_index(column, self.header)
 
         if len(classes.keys()) == 0:
             # классы не заданы - автоматически определить классы на основе имеющихся в столбце значений
             src_column_name = self.header[ci]
-            items_uniq = []
-            for i in range(len(self.data)):
-                x = self.data[i][ci]
-                if x is None:
-                    continue
-                if not x in items_uniq:
-                    items_uniq.append(x)
+            items_uniq = self.get_unique_values(ci)
             items_uniq.sort()
             for x in items_uniq:
                 class_name = src_column_name + '=' + x
                 classes[class_name] = [x]
-        
+            #pprint(classes); exit(0)
+
         # если не для всех классов значения заданы в виде списка - сконвертировать скаляр в список
         #for j in range(len(classes)):
         for key in classes.keys():
             values = classes[key]
-            if type(values) != type([]) and type(values) != type(()):
+            if is_scalar(values):
+            #if type(values) != type([]) and type(values) != type(()):
                 classes[key] = [values]
 
         # составить список имён новых классов
@@ -560,7 +754,7 @@ class ColumnsReader():
                     self.data[i].append(when_missed)
 
         if not keep_src_column:
-            self.remove_column(ci)
+            self.drop_column(ci)
 
 
     def get_stat(self, columns = [], unique_max_count = 10):
@@ -587,11 +781,14 @@ class ColumnsReader():
                 stat[self.header[ci]]["counting"] = Counter(items)
         return stat
 
+    
     def get_header(self):
         return self.header
     
+
     def get_data(self):
         return self.data
+    
 
     def copy(self, columns = [], since_row = 0, until_row = -1):
         csr = ColumnsReader()
@@ -607,12 +804,14 @@ class ColumnsReader():
             csr.data.append(data_row)
         return csr
 
+
     def copy_header(self, columns = []):
         header = []
         columns_indexes = self.get_columns_indexes(columns, self.header)
         for ci in columns_indexes:
             header.append(self.header[ci])
         return header
+
 
     def copy_data(self, columns = [], since_row = 0, until_row = -1, keep_columns_if_vector:bool = False):
         data = []
@@ -631,7 +830,8 @@ class ColumnsReader():
                 # двумерная матрица, даже если из одного столбца
                 data.append(data_row)
         return data
-    
+
+
     def print(self, columns = [], since_row = 0, until_row = -1):
         columns_indexes = self.get_columns_indexes(columns, self.header)
         if until_row < 0:
@@ -667,6 +867,9 @@ class ColumnsReader():
     # ----- Получить словарь, в котором ключ - уникальное значение столбца, а значение - сколько раз это значание повторяется в таблице -----
     def count_unique_values(self, column, ignore_case:bool = False):
         j = self.get_column_index(column, self.header)
+        if j is None:
+            # не удалось определить номер столбца
+            return None
         values = {}
         for i in range(len(self.data)):
             x = self.data[i][j]
@@ -714,10 +917,65 @@ class ColumnsReader():
         return items[p]
 
 
+    # ----- Автоматическая конвертация данных -----
+    def autoconvert_from_strings(
+            self,
+            columns = [],
+            supposed_data_types = {DATA_TYPE__INTEGER, DATA_TYPE__FLOAT, DATA_TYPE__BOOLEAN, DATA_TYPE__DATETIME}
+        ):
+        columns_indexes = self.get_columns_indexes(columns, self.header)
+        for j in columns_indexes:
+            x = self.data[0][j]
+            if type(x) != type('abc'):
+                # в столбце данные не являются строкой, поэтому нет необходимости в их автоматической конвертации
+                continue
+            possible_data_types = supposed_data_types.copy()
+            for i in range(len(self.data)):
+                x = self.data[i][j]
+                if x is None:
+                    # пропуск неопределённых значений
+                    continue
+                
+                if DATA_TYPE__INTEGER in possible_data_types:
+                    try:
+                        x_int = int(x)
+                    except:
+                        possible_data_types.discard(DATA_TYPE__INTEGER)
+                
+                if DATA_TYPE__FLOAT in possible_data_types:
+                    try:
+                        x_float = float(x)
+                    except:
+                        possible_data_types.discard(DATA_TYPE__FLOAT)
 
+                if DATA_TYPE__BOOLEAN in possible_data_types:
+                    if x not in TRUE_VALUES and x not in FALSE_VALUES:
+                        possible_data_types.discard(DATA_TYPE__BOOLEAN)
+
+                if DATA_TYPE__DATETIME in possible_data_types:
+                    x_dt = str_to_date_time(x)
+                    if x_dt is None:
+                        possible_data_types.discard(DATA_TYPE__DATETIME)
+
+                if len(possible_data_types) == 0:
+                    # все возможные типы данных для этого столбца исключены - не читать дальнейшие строки этого столбца
+                    break
+            if DATA_TYPE__BOOLEAN in possible_data_types:
+                self.transform(TRANSFORMATION_KIND__TO_BOOLEAN, j)
+            elif DATA_TYPE__INTEGER in possible_data_types:
+                self.transform(TRANSFORMATION_KIND__TO_INTEGER, j)
+            elif DATA_TYPE__FLOAT in possible_data_types:
+                self.transform(TRANSFORMATION_KIND__TO_FLOAT, j)
+            elif DATA_TYPE__DATETIME in possible_data_types:
+                self.transform(TRANSFORMATION_KIND__TO_DATE_TIME, j)
+
+
+    # ----- Вывести первые first_rows_count строк с данными -----
     def head(self, columns = [], first_rows_count = 5):
         self.print(columns, 0, first_rows_count)
 
+
+    # ----- Вывести последние last_rows_count строк с данными -----
     def tail(self, columns = [], last_rows_count = 5):
         self.print(columns, len(self.data)-last_rows_count, len(self.data))
 
